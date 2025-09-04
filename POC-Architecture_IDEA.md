@@ -125,7 +125,7 @@ sequenceDiagram
     CallbackContract-->>ReactiveContract: emit ProtectionCycleCompleted
     ReactiveContract->>ReactiveContract: processingActive = false
 
-    Note over User, SystemContract: Phase 4: CORRECTED Emergency Response (Liquidation Event)
+    Note over User, SystemContract: Phase 4: Emergency Response (Liquidation Event)
 
     AmmalgamPair-->>ReactiveContract: Liquidation Event (borrower, to, amounts..., liquidationType)
     ReactiveContract->>ReactiveContract: _handleLiquidationEvent()
@@ -173,7 +173,7 @@ sequenceDiagram
     
     CallbackContract-->>ReactiveContract: emit ProtectionCycleCompleted
 
-    Note over User, SystemContract: Phase 5: CORRECTED Position Change Response (Real-time)
+    Note over User, SystemContract: Phase 5: Position Change Response (Real-time)
 
     Note over User, SystemContract: HIGH PRIORITY - Risk Increasing Events
     User->>AmmalgamPair: borrow() / borrowLiquidity() / withdraw() [Risk Increasing]
@@ -222,5 +222,3 @@ sequenceDiagram
     CallbackContract->>CallbackContract: Remove protection & cleanup user data
     CallbackContract-->>User: emit UserUnsubscribed
 ```
-
-##
