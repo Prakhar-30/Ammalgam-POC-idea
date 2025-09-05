@@ -6,7 +6,24 @@ A reactive smart contract system built on the REACTIVE Network that provides aut
 
 ## System Flow
 
-```mermaid
+### **Four-Tier Monitoring System Using VERIFIED CRON Pattern:**
+
+1. **CRON-based Periodic (Every trigger of CRON_TOPIC)**: 
+   - Reactive contract subscribes to `service.subscribe(chainid, service, CRON_TOPIC, ...)`
+   - When `log.topic_0 == CRON_TOPIC`, emits callback to check all subscribed users
+   - Comprehensive risk analysis for all three liquidation types
+
+2. **Event-driven High Priority (60s cooldown)**: 
+   - Risk-increasing events: `BorrowLiquidity`, `Borrow`, `Withdraw`
+   - Cooldown handled in reactive contract state before triggering callback
+
+3. **Event-driven Low Priority (120s cooldown)**: 
+   - Risk-decreasing events: `Deposit`, `RepayLiquidity`, `Repay`
+   - Longer cooldown since these events reduce risk
+
+4. **Emergency Response (No cooldown)**: 
+   - `Liquidate` events trigger immediate protection check
+   - Direct callback emission without cooldown checksmermaid
 sequenceDiagram
     participant User
     participant ReactiveContract as Reactive Contract<br/>(REACTIVE Network)
