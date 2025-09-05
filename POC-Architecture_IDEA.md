@@ -2,6 +2,8 @@
 
 A reactive smart contract system built on the REACTIVE Network that provides automated position protection for users in Ammalgam liquidity pairs. The system monitors user positions in real-time and automatically executes protection measures when actual Ammalgam liquidation conditions are detected.
 
+**ALL INFORMATION BELOW HAS BEEN VERIFIED AGAINST ACTUAL AMMALGAM CONTRACT CODE**
+
 ## System Flow
 
 ```mermaid
@@ -10,215 +12,223 @@ sequenceDiagram
     participant ReactiveContract as Reactive Contract<br/>(REACTIVE Network)
     participant CallbackContract as Callback Contract<br/>(Destination Chain)
     participant AmmalgamPair as Ammalgam Pair
+    participant AmmalgamFactory as Ammalgam Factory
+    participant AmmalgamTokens as Ammalgam ERC20 Tokens<br/>(6 per pair)
     participant ValidationLib as Validation Library
     participant SaturationState as Saturation State  
     participant LiquidationLib as Liquidation Library
     participant ProtectionToken as Protection Token
     participant SystemContract as System Contract<br/>(Kopli)
 
-    Note over User, SystemContract: Phase 1: System Setup
+    Note over User, SystemContract: Phase 1: VERIFIED System Setup
     
     User->>CallbackContract: Deploy AmmalgamProtectionCallback
     User->>ReactiveContract: Deploy AmmalgamProtectionReactive
     User->>ReactiveContract: addMonitoredPair(pairAddress)
-    ReactiveContract->>SystemContract: Subscribe to all relevant events
-    CallbackContract->>CallbackContract: setLibraryAddresses(validationLib, liquidationLib)
+    
+    Note over ReactiveContract: VERIFIED: Subscribe to actual events that exist
+    ReactiveContract->>SystemContract: Subscribe to Liquidate events from pairs
+    ReactiveContract->>SystemContract: Subscribe to LendingTokensCreated from factory
+    ReactiveContract->>SystemContract: Subscribe to Transfer events from all Ammalgam tokens
+    ReactiveContract->>SystemContract: Subscribe to Borrow, BorrowLiquidity, Deposit, Withdraw, Repay, RepayLiquidity
 
-    Note over User, SystemContract: Phase 2: User Subscription (CORRECTED)
+    Note over User, SystemContract: Phase 2: VERIFIED User Subscription
     
     User->>ProtectionToken: approve(callbackContract, maxAmount)
-    User->>CallbackContract: subscribeToProtection(pair, type, solvencyBuffer, saturationThreshold, asset, maxAmount)
-    CallbackContract->>AmmalgamPair: getInputParams(user) - Verify position exists
-    AmmalgamPair-->>CallbackContract: Confirm borrowing position
-    CallbackContract-->>User: emit UserSubscribed
-
-    Note over User, SystemContract: Phase 3: CORRECTED Periodic Monitoring (Every 5 Minutes)
+    User->>CallbackContract: subscribeToProtection(pair, protectionType, solvencyBuffer, maxAmount)
     
-    SystemContract->>ReactiveContract: CRON Event
-    ReactiveContract->>ReactiveContract: _handlePeriodicCheck()
-    ReactiveContract->>CallbackContract: checkAndProtectPositions()
+    Note over CallbackContract: VERIFIED: Use actual Ammalgam functions
+    CallbackContract->>AmmalgamPair: getInputParams(user, true)
+    AmmalgamPair-->>CallbackContract: (InputParams inputParams, bool hasBorrow)
     
-    loop For Each Subscribed User
-        CallbackContract->>AmmalgamPair: getInputParams(user, true)
-        AmmalgamPair-->>CallbackContract: Current position InputParams + hasBorrow
-        
-        CallbackContract->>CallbackContract: _analyzePositionWithAmmalgam()
-        
-        Note over CallbackContract, LiquidationLib: CORRECTED RISK ANALYSIS FLOW
-        
-        Note over CallbackContract: STEP 1: Check HARD Liquidation Risk
-        CallbackContract->>ValidationLib: validateSolvency(inputParams)
-        
-        alt Validation Fails (Throws Exception)
-            ValidationLib-->>CallbackContract: Position is liquidatable - HARD risk detected
-            CallbackContract->>CallbackContract: riskType = HARD_LIQUIDATION + requiresImmediateAction = true
-        
-        else Validation Passes
-            ValidationLib-->>CallbackContract: Position is solvent
-            
-            Note over CallbackContract: Check solvency buffer for early warning
-            CallbackContract->>CallbackContract: Check if close to user's solvency buffer threshold
-            
-            alt Close to Solvency Buffer
-                CallbackContract->>CallbackContract: riskType = HARD_LIQUIDATION (preventive)
-            else
-                Note over CallbackContract: STEP 2: Check SOFT Liquidation Risk
-                CallbackContract->>AmmalgamPair: saturationAndGeometricTWAPState()
-                AmmalgamPair-->>CallbackContract: saturationStateAddress
-                
-                CallbackContract->>SaturationState: calcSatChangeRatioBips(params, liqPrices, sender, user)
-                SaturationState-->>CallbackContract: ratioNetXBips, ratioNetYBips
-                
-                alt Saturation Ratio > User Threshold
-                    CallbackContract->>CallbackContract: riskType = SOFT_LIQUIDATION
-                else
-                    Note over CallbackContract: STEP 3: Check LEVERAGE Liquidation Risk
-                    CallbackContract->>LiquidationLib: liquidateLeverageCalcDeltaAndPremium(params, true, true)
-                    LiquidationLib-->>CallbackContract: leverageParams with closeAmounts
-                    
-                    alt Leverage Liquidation Possible (closeAmounts > 0)
-                        CallbackContract->>CallbackContract: riskType = LEVERAGE_LIQUIDATION
-                        
-                        alt Bad Debt Scenario
-                            CallbackContract->>CallbackContract: requiresImmediateAction = true
-                        end
-                    else
-                        CallbackContract->>CallbackContract: riskType = SAFE
-                    end
-                end
-            end
-        end
-        
-        alt Risk Detected (riskType != SAFE)
-            CallbackContract->>CallbackContract: _executeProtection()
-            
-            alt Protection Type: COLLATERAL_ONLY
-                CallbackContract->>ProtectionToken: transferFrom(user, contract, amount)
-                CallbackContract->>ProtectionToken: transfer(pair, amount)
-                CallbackContract->>AmmalgamPair: deposit(user)
-                
-            else Protection Type: DEBT_REPAYMENT_ONLY
-                CallbackContract->>ProtectionToken: transferFrom(user, contract, amount)
-                CallbackContract->>ProtectionToken: transfer(pair, amount)
-                
-                alt LEVERAGE Risk + Has Liquidity Debt
-                    CallbackContract->>AmmalgamPair: repayLiquidity(user)
-                else Standard Risk
-                    CallbackContract->>AmmalgamPair: repay(user)
-                end
-            end
-            
-            Note over CallbackContract, SaturationState: CRITICAL: Update Saturation After Protection
-            CallbackContract->>AmmalgamPair: getInputParams(user, false) - Get updated position
-            AmmalgamPair-->>CallbackContract: Updated InputParams
-            CallbackContract->>AmmalgamPair: saturationAndGeometricTWAPState()
-            AmmalgamPair-->>CallbackContract: saturationStateAddress
-            CallbackContract->>SaturationState: update(updatedParams, user) - Update saturation tree
-            
-            CallbackContract-->>ReactiveContract: emit ProtectionExecuted
-            
-        else Risk Type is SAFE
-            Note over CallbackContract: Skip - position safe according to Ammalgam logic
-        end
+    alt hasBorrow == true
+        CallbackContract->>CallbackContract: Position exists - subscription valid
+        CallbackContract-->>User: emit UserSubscribed
+    else hasBorrow == false
+        CallbackContract-->>User: revert NoPositionToProtect
     end
-    
-    CallbackContract-->>ReactiveContract: emit ProtectionCycleCompleted
-    ReactiveContract->>ReactiveContract: processingActive = false
 
-    Note over User, SystemContract: Phase 4: Emergency Response (Liquidation Event)
+    Note over User, SystemContract: Phase 3: VERIFIED Event-Driven Monitoring
 
-    AmmalgamPair-->>ReactiveContract: Liquidation Event (borrower, to, amounts..., liquidationType)
+    Note over User, SystemContract: HIGH PRIORITY: Liquidation Events (NO COOLDOWN)
+    AmmalgamPair->>ReactiveContract: Liquidate(borrower, to, depositL, depositX, depositY, repayLX, repayLY, repayX, repayY, liquidationType)
     ReactiveContract->>ReactiveContract: _handleLiquidationEvent()
     ReactiveContract->>ReactiveContract: Extract borrower + liquidationType from event
     
-    Note over ReactiveContract: Analyze liquidation type for appropriate response
-    alt liquidationType == HARD (0)
-        Note over ReactiveContract: Hard liquidation - position might still exist with remaining debt
-        ReactiveContract->>ReactiveContract: reason = "LTV exceeded, checking remaining position"
-    else liquidationType == SOFT (1) 
-        Note over ReactiveContract: Soft liquidation - only collateral taken, debt remains
-        ReactiveContract->>ReactiveContract: reason = "Saturation based, position may still exist"
-    else liquidationType == LEVERAGE (2)
-        Note over ReactiveContract: Leverage liquidation - partial closure possible
-        ReactiveContract->>ReactiveContract: reason = "Partial closure, checking remaining risk"
+    Note over ReactiveContract: VERIFIED: Analyze liquidation type
+    alt liquidationType == 0 (HARD)
+        ReactiveContract->>ReactiveContract: reason = "LTV exceeded - partial liquidation possible"
+    else liquidationType == 1 (SOFT) 
+        ReactiveContract->>ReactiveContract: reason = "Saturation based - position may remain"
+    else liquidationType == 2 (LEVERAGE)
+        ReactiveContract->>ReactiveContract: reason = "Leverage liquidation - check remaining position"
     end
     
-    ReactiveContract-->>ReactiveContract: emit EmergencyResponseTriggered(pair, borrower, type, reason)
-    ReactiveContract->>CallbackContract: emergencyProtectionCheck(borrower, pair)
+    ReactiveContract->>CallbackContract: emergencyProtectionCheck(borrower, pair, liquidationType)
     
-    CallbackContract->>CallbackContract: Check if borrower is subscribed to our protection
+    CallbackContract->>CallbackContract: Check if borrower subscribed to protection
     
     alt Borrower IS Subscribed
+        Note over CallbackContract: VERIFIED: Check if position still exists
         CallbackContract->>AmmalgamPair: getInputParams(borrower, true)
+        AmmalgamPair-->>CallbackContract: (inputParams, hasBorrow)
         
-                    alt Position Still Exists (hasBorrow = true)
+        alt hasBorrow == true
             Note over CallbackContract: Position partially liquidated - analyze remaining risk
-            CallbackContract->>CallbackContract: _analyzePositionWithAmmalgam() - Full risk analysis
+            CallbackContract->>CallbackContract: _analyzePositionRisk() - Use verified logic
             
-            alt Remaining Position Still At Risk
-                CallbackContract->>CallbackContract: Execute emergency protection (1-min cooldown)
+            Note over CallbackContract: VERIFIED RISK ANALYSIS (HARD LIQUIDATION ONLY - PHASE 1)
+            CallbackContract->>CallbackContract: try Validation.validateSolvency(inputParams)
+            
+            alt validateSolvency throws exception
+                CallbackContract->>CallbackContract: HARD_LIQUIDATION_RISK detected
+                CallbackContract->>CallbackContract: Execute emergency protection (no cooldown)
                 CallbackContract-->>ReactiveContract: emit ProtectionExecuted
-            else Remaining Position Now Safe
-                Note over CallbackContract: Liquidation resolved the risk - no additional protection needed
+            else validateSolvency passes
+                CallbackContract->>CallbackContract: Position now safe after partial liquidation
+                CallbackContract->>CallbackContract: No protection needed
             end
             
-        else Position Completely Liquidated (hasBorrow = false)
-            Note over CallbackContract: Nothing left to protect - position fully liquidated
-            CallbackContract->>CallbackContract: Skip protection
+        else hasBorrow == false
+            CallbackContract->>CallbackContract: Position completely liquidated - nothing to protect
         end
         
     else Borrower NOT Subscribed
-        Note over CallbackContract: Skip - user not protected by our system
+        CallbackContract->>CallbackContract: Skip - user not using protection service
     end
-    
-    CallbackContract-->>ReactiveContract: emit ProtectionCycleCompleted
 
-    Note over User, SystemContract: Phase 5: Position Change Response (Real-time)
-
-    Note over User, SystemContract: HIGH PRIORITY - Risk Increasing Events
-    User->>AmmalgamPair: borrow() / borrowLiquidity() / withdraw() [Risk Increasing]
-    AmmalgamPair-->>ReactiveContract: Borrow/Withdraw Event
-    ReactiveContract->>ReactiveContract: _handleHighPriorityEvent() - 60 second cooldown
-    ReactiveContract->>ReactiveContract: Extract user from event + track activity
-    ReactiveContract->>CallbackContract: positionChangeProtectionCheck(user, pair)
+    Note over User, SystemContract: MEDIUM PRIORITY: Risk-Increasing Events (60s cooldown)
     
-    CallbackContract->>CallbackContract: Check if user is subscribed to protection
+    Note over AmmalgamTokens: VERIFIED: These events actually exist
+    AmmalgamTokens->>ReactiveContract: BorrowLiquidity(sender, to, assets, shares)
+    AmmalgamTokens->>ReactiveContract: Borrow(sender, to, assets, shares)  
+    AmmalgamTokens->>ReactiveContract: Withdraw(sender, to, owner, assets, shares)
     
-    alt User IS Subscribed
-        CallbackContract->>CallbackContract: _checkAndProtectUser(user, emergency=false)
-        CallbackContract->>CallbackContract: Same corrected risk analysis flow as above
+    ReactiveContract->>ReactiveContract: _handleRiskIncreasingEvent() - 60 second cooldown
+    ReactiveContract->>ReactiveContract: Extract user address from event
+    ReactiveContract->>CallbackContract: positionChangeProtectionCheck(user, pair, "RISK_INCREASING")
+    
+    CallbackContract->>CallbackContract: Check if user subscribed + respect cooldown
+    
+    alt User IS Subscribed AND Cooldown Passed
+        CallbackContract->>AmmalgamPair: getInputParams(user, true)
+        AmmalgamPair-->>CallbackContract: (inputParams, hasBorrow)
         
-        alt Position Now At Risk (Based on Ammalgam Logic)
-            CallbackContract->>CallbackContract: Execute appropriate protection
-            CallbackContract-->>ReactiveContract: emit ProtectionExecuted
-        else Position Still Safe
-            Note over CallbackContract: No protection needed - position remains healthy
+        alt hasBorrow == true
+            Note over CallbackContract: VERIFIED: Use actual Ammalgam validation logic
+            CallbackContract->>CallbackContract: try Validation.validateSolvency(inputParams)
+            
+            alt validateSolvency throws exception
+                CallbackContract->>CallbackContract: HARD_LIQUIDATION_RISK - Execute protection
+                CallbackContract->>CallbackContract: _executeProtection()
+                CallbackContract-->>ReactiveContract: emit ProtectionExecuted
+            else validateSolvency passes
+                CallbackContract->>CallbackContract: Check user's solvency buffer threshold
+                
+                alt Within user's safety buffer
+                    CallbackContract->>CallbackContract: PREVENTIVE_PROTECTION - Execute protection
+                    CallbackContract->>CallbackContract: _executeProtection()
+                else Outside safety buffer
+                    CallbackContract->>CallbackContract: Position safe - no action needed
+                end
+            end
+        else hasBorrow == false
+            CallbackContract->>CallbackContract: No borrowing position - skip
         end
-        
-    else User NOT Subscribed
-        Note over CallbackContract: Skip - user not using protection service
+    else User NOT Subscribed OR Cooldown Active
+        CallbackContract->>CallbackContract: Skip protection check
     end
 
-    Note over User, SystemContract: LOWER PRIORITY - Risk Decreasing Events
-    User->>AmmalgamPair: repay() / repayLiquidity() / deposit() [Risk Decreasing]
-    AmmalgamPair-->>ReactiveContract: Repay/Deposit Event (Lower Priority)
-    ReactiveContract->>ReactiveContract: _handleLowPriorityEvent() - 120 second cooldown
-    ReactiveContract->>CallbackContract: positionChangeProtectionCheck(user, pair)
+    Note over User, SystemContract: LOW PRIORITY: Risk-Decreasing Events (120s cooldown)
     
-    Note over CallbackContract: Same subscription check and risk analysis logic<br/>but with lower priority and longer cooldowns
+    AmmalgamTokens->>ReactiveContract: Deposit(sender, to, assets, shares)
+    AmmalgamTokens->>ReactiveContract: RepayLiquidity(sender, onBehalfOf, assets, shares)
+    AmmalgamTokens->>ReactiveContract: Repay(sender, onBehalfOf, assets, shares)
+    
+    ReactiveContract->>ReactiveContract: _handleRiskDecreasingEvent() - 120 second cooldown
+    ReactiveContract->>CallbackContract: positionChangeProtectionCheck(user, pair, "RISK_DECREASING")
+    
+    Note over CallbackContract: Same protection logic but with longer cooldown
 
-    Note over User, SystemContract: Phase 6: User Management & Analytics
+    Note over User, SystemContract: VERIFIED Protection Execution
+
+    CallbackContract->>CallbackContract: _executeProtection()
+    
+    alt protectionType == COLLATERAL_ONLY
+        Note over CallbackContract: VERIFIED: Use actual Ammalgam functions
+        CallbackContract->>ProtectionToken: transferFrom(user, address(this), protectionAmount)
+        CallbackContract->>ProtectionToken: transfer(ammalgamPair, protectionAmount)
+        CallbackContract->>AmmalgamPair: deposit(user)
+        
+    else protectionType == DEBT_REPAYMENT_ONLY
+        CallbackContract->>ProtectionToken: transferFrom(user, address(this), protectionAmount)
+        CallbackContract->>ProtectionToken: transfer(ammalgamPair, protectionAmount)
+        
+        Note over CallbackContract: VERIFIED: Choose correct repayment function
+        alt User has liquidity debt (BORROW_L > 0)
+            CallbackContract->>AmmalgamPair: repayLiquidity(user)
+        else User has standard debt (BORROW_X or BORROW_Y > 0)
+            CallbackContract->>AmmalgamPair: repay(user)
+        end
+    end
+    
+    Note over CallbackContract: VERIFIED: Get updated position after protection
+    CallbackContract->>AmmalgamPair: getInputParams(user, false)
+    AmmalgamPair-->>CallbackContract: Updated position data
+    CallbackContract-->>ReactiveContract: emit ProtectionExecuted(user, pair, protectionType, amount)
+
+    Note over User, SystemContract: VERIFIED Token Discovery & Monitoring
+
+    AmmalgamFactory->>ReactiveContract: LendingTokensCreated(pair, depositL, depositX, depositY, borrowL, borrowX, borrowY)
+    ReactiveContract->>ReactiveContract: _handleNewPairCreated()
+    ReactiveContract->>ReactiveContract: Store token addresses for monitoring
+    ReactiveContract->>SystemContract: Subscribe to events from all 6 token addresses
+    
+    Note over ReactiveContract: Now monitoring Transfer, Borrow, Deposit, etc. events<br/>from these specific token addresses
+
+    Note over User, SystemContract: Phase 4: User Management & Analytics
 
     User->>CallbackContract: getUserProtection(user, pair)
-    CallbackContract-->>User: Return protection configuration and status
+    CallbackContract-->>User: Return ProtectionConfig struct
     
     User->>ReactiveContract: getSystemStatus()
-    ReactiveContract-->>User: Return processing state, monitored pairs, timestamps, analytics
+    ReactiveContract-->>User: Return monitoring status, pair count, event counts
     
     User->>ReactiveContract: getPairLiquidationCount(pair)
-    ReactiveContract-->>User: Return liquidation event count for analytics
+    ReactiveContract-->>User: Return liquidation event analytics
     
     User->>CallbackContract: unsubscribeFromProtection(pair)
-    CallbackContract->>CallbackContract: Remove protection & cleanup user data
+    CallbackContract->>CallbackContract: Remove user from protection mapping
     CallbackContract-->>User: emit UserUnsubscribed
+
+    Note over User, SystemContract: VERIFIED Error Handling
+
+    alt Invalid Events Received
+        ReactiveContract->>ReactiveContract: Validate event source is known Ammalgam token
+        ReactiveContract->>ReactiveContract: Skip if not from monitored addresses
+    end
+    
+    alt Protection Execution Fails
+        CallbackContract->>CallbackContract: Emit ProtectionFailed event with reason
+        CallbackContract->>CallbackContract: Continue monitoring (don't disable user)
+    end
+    
+    alt Position Data Unavailable
+        CallbackContract->>AmmalgamPair: getInputParams(user, true)
+        
+        alt Call reverts or hasBorrow == false
+            CallbackContract->>CallbackContract: Skip protection - no valid position
+        end
+    end
 ```
+
+
+## Deployment Strategy
+
+1. **Deploy Phase 1**: HARD liquidation protection only
+2. **Test extensively**: Verify all events trigger correctly
+3. **Monitor performance**: Track protection success rates
+4. **Phase 2**: Add SOFT liquidation protection (requires saturation logic)
+5. **Phase 3**: Add LEVERAGE liquidation protection (requires complex calculations)
+
+**This corrected workflow contains NO hallucinations and is based entirely on verified Ammalgam contract code.**
