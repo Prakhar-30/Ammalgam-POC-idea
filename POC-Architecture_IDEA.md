@@ -18,7 +18,7 @@ sequenceDiagram
     participant SaturationState as Saturation State  
     participant LiquidationLib as Liquidation Library
     participant ProtectionToken as Protection Token
-    participant SystemContract as System Contract<br/>(Kopli)
+    participant SystemContract as System Contract<br/>(REACTIVE NETWORK)
 
     Note over User, SystemContract: Phase 1: VERIFIED System Setup
     
